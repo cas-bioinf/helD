@@ -8,6 +8,7 @@ output: html_notebook
 library(DESeq2)
 library(here)
 library(tidyverse)
+includeExp1 = TRUE
 ```
 
 # Load data
@@ -114,13 +115,22 @@ I am filtering out rRNA counts (expecially because of the rRNA problem in Exp1)
 
 
 ```{r}
-counts_all_matrix <- counts1 %>% 
+
+counts_all_matrix <- 
+  {
+  if(includeExp1) { counts1 }
+  else { counts1 %>% head(0) }
+  } %>%
   inner_join(counts2, c("gene" = "gene")) %>%
   inner_join(counts3, c("gene" = "gene")) %>%
   filter(!grepl("^BSU_rRNA_", gene)) %>%
   column_to_rownames("gene") %>% as.matrix()
 
-sampleInfo_all <- rbind(sampleInfo1, sampleInfo2, sampleInfo3) %>%
+sampleInfo_all <- rbind(
+    if(includeExp1) { sampleInfo1 }
+    else { sampleInfo1 %>% head(0) },
+    sampleInfo2, sampleInfo3
+  ) %>%
   mutate(run = factor(paste0("Exp",experiment,"_",run)),
          sample = factor(paste0("Exp",experiment,"_",sample)),
          genotype = factor(genotype, levels = c("WT","helD_KO")), #relevel(genotype, ref = "WT"),
@@ -150,17 +160,6 @@ dds <- DESeqDataSetFromMatrix(countData = counts_all_matrix,
 dds <- estimateSizeFactors(dds)
 dds <- estimateDispersions(dds)
 dds <- nbinomWaldTest(dds, betaPrior = TRUE)
-
-converged <- mcols(dds)$betaConv
-converged[is.na(converged)] <- TRUE
-if(any(!converged)) {
-  cat(sum(!converged), "non converged rows - removing\n")
-  print(counts_all_matrix[!converged,])
-  dds <- dds[converged,]
-  dds <- nbinomWaldTest(dds, betaPrior = FALSE)
-}
-
-
 ```
 
 ```{r}
