@@ -1,0 +1,202 @@
+---
+title: "helD alternative analysis"
+output: html_notebook
+---
+
+
+```{r setup}
+library(DESeq2)
+library(here)
+library(tidyverse)
+```
+
+# Load data
+
+Based largerly on the original code by Martin Převorovský (Thanks!)
+
+## Read first experiment
+
+The first experiment has extra deletion AND a lots of rRNA reads :-/
+It also compares SPOrulation to EXPonential and uses a different medium than the other two.
+
+```{r}
+# prepare summarized experiment metadata
+samples1 <- c('helD_EXP_3', 'WT_EXP_1', 'WT_SPO_3', 'helD_SPO_3', 'helD_EXP_1', 'WT_SPO_1', 'helD_SPO_1', 'WT_EXP_2', 'helD_EXP_2', 'WT_SPO_2', 'helD_SPO_2', 'WT_EXP_3') # NOTE the seemingly irregular order of samples is due alphabetical sorting of file names containing number (810, 81, 811, 822, 82...)
+sampleInfo1 <-  data.frame(t(read.csv(here('private_data','sampleInfo'), sep='\t', head=F)))
+colnames(sampleInfo1) <- c('run', 'genotype', 'file', 'phase')
+sampleInfo1 <- sampleInfo1 %>% mutate(sample = samples1, experiment = "1", 
+                                    extra_deletion = (genotype == "helD_KO"),
+                                    growth_medium = "A")
+
+counts1 <- read.csv(here('private_data','counts.txt'))
+colnames(counts1)[1] <- "gene"
+
+# remove contaminated samples (only ~5% reads mapped)
+sampleInfo1 <- sampleInfo1 %>% filter(!(sample %in% c("helD_EXP_3","helD_SPO_3")))
+counts1 <- counts1 %>% select(-helD_EXP_3, -helD_SPO_3)
+  
+if(!all(colnames(counts1)[2:length(counts1)] == sampleInfo1$sample)) {
+  stop("Mismatched count columns and sample info")
+}
+
+colnames(counts1)[2:length(counts1)] <- paste0("Exp1_",colnames(counts1)[2:length(counts1)])
+
+```
+
+## Read second experiment
+
+This experiment still had extra deletion with helD
+
+```{r}
+# prepare summarized experiment metadata
+samples2 <- c('helD_1', 'helD_2', 'helD_3', 'WT_1', 'WT_2', 'WT_3')
+sampleInfo2 <- data.frame(t(read.csv(here('private_data','sampleInfo_r2'), sep = '\t', head = FALSE)))
+colnames(sampleInfo2) <- c('run', 'genotype', 'file')
+sampleInfo2 <- sampleInfo2 %>% mutate(sample = samples2, phase = 'EXP', experiment = "2", 
+                                      extra_deletion = (genotype == "helD_KO"),
+                                      growth_medium = "B")
+
+counts2 <- read.csv(here('private_data','counts_r2.txt'))
+colnames(counts2)[1] <- "gene"
+if(!all(colnames(counts2)[2:length(counts2)] == samples2)) {
+  stop("Mismatched count columns and sample info")
+}
+
+colnames(counts2)[2:length(counts2)] <- paste0("Exp2_",colnames(counts2)[2:length(counts2)])
+
+```
+
+## Read third experiment
+
+```{r}
+samples3 <- c('helD_EXP_A', 'helD_STAT_A', 'helD_EXP_B', 'helD_STAT_B', 'helD_EXP_D', 'helD_STAT_D',
+             'WT_EXP_A', 'WT_STAT_A', 'WT_EXP_B', 'WT_STAT_B', 'WT_EXP_D', 'WT_STAT_D')
+sampleInfo3 <- data.frame(t(read.csv(here('private_data','sampleInfo_r3'), sep = '\t', head = FALSE)))
+colnames(sampleInfo3) <- c('genotype', 'phase', 'run', 'file')
+sampleInfo3 <- sampleInfo3 %>% mutate(sample = samples3, experiment = "3", 
+                                      extra_deletion = FALSE, growth_medium = "B",
+                                      genotype = fct_recode(genotype, "helD_KO" = "helD KO"))
+
+counts3 <- read.csv(here('private_data','counts_r3.txt'))
+colnames(counts3)[1] <- "gene"
+if(!all(colnames(counts3)[2:length(counts3)] == samples3)) {
+  stop("Mismatched count columns and sample info")
+}
+
+colnames(counts3)[2:length(counts3)] <- paste0("Exp3_",colnames(counts3)[2:length(counts3)])
+
+```
+
+# Check gene overlap in the data
+
+```{r}
+num_mismatch = 0
+num_mismatch <- num_mismatch + length(setdiff(counts1$gene, counts2$gene))
+num_mismatch <- num_mismatch + length(setdiff(counts1$gene, counts3$gene))
+num_mismatch <- num_mismatch + length(setdiff(counts2$gene, counts1$gene))
+num_mismatch <- num_mismatch + length(setdiff(counts2$gene, counts3$gene))
+num_mismatch <- num_mismatch + length(setdiff(counts3$gene, counts1$gene))
+num_mismatch <- num_mismatch + length(setdiff(counts3$gene, counts2$gene))
+if(num_mismatch > 0) {
+  stop("Not all genes are in all count files")
+}
+```
+
+# Create joint dataset
+
+I am filtering out rRNA counts (expecially because of the rRNA problem in Exp1)
+
+BSU29390  
+
+```{r}
+counts_all_matrix <- #counts1 %>% 
+  counts2 %>%
+  #inner_join(counts2, c("gene" = "gene")) %>%
+  inner_join(counts3, c("gene" = "gene")) %>%
+  filter(!grepl("^BSU_rRNA_", gene)) %>%
+  column_to_rownames("gene") %>% as.matrix()
+
+sampleInfo_all <- #rbind(sampleInfo1, sampleInfo2, sampleInfo3) %>%
+  rbind(sampleInfo2, sampleInfo3) %>% 
+  mutate(run = factor(paste0("Exp",experiment,"_",run)),
+         sample = factor(paste0("Exp",experiment,"_",sample)),
+         genotype = factor(genotype, levels = c("WT","helD_KO")), #relevel(genotype, ref = "WT"),
+         phase = factor(phase, levels = c("STAT","EXP","SPO")),  # relevel(phase, ref = "STAT"),
+         extra_deletion = factor(extra_deletion, levels = c(FALSE, TRUE), labels = c("no", "yes")),
+         genotype_phase = interaction(genotype, phase)
+         ) %>%
+  droplevels()
+
+if(!all(sampleInfo_all$sample == colnames(counts_all_matrix))) {
+  stop("Mismatched count columns and sample info")
+}
+```
+
+# The actual DESeq
+
+Using shrinkage - the `betaPrior` argument (which is not default), as without shrinkage there are convergence issues.
+
+```{r}
+# Currently We ignore growth medium as this is covered by the run variable
+dds <- DESeqDataSetFromMatrix(countData = counts_all_matrix,
+                              colData = sampleInfo_all,
+                              #design = ~ genotype + extra_deletion + run + phase)
+                              design = ~ genotype_phase + extra_deletion + run)
+
+#dds <- DESeq(dds, betaPrior = TRUE)
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+dds <- nbinomWaldTest(dds, betaPrior = TRUE)
+
+```
+
+```{r}
+res_helD <- results(dds, name = "helD_KO", contrast = c("genotype","helD_KO","WT"))
+#res_helD_lfc <- lfcShrink(dds)
+res_helD %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj <= 0.05)
+plotCounts(dds, gene = "BSU33450", intgroup = "genotype", normalized = TRUE )
+plotCounts(dds, gene = "BSU33450", intgroup = "phase", normalized = TRUE )
+
+```
+
+```{r}
+res_extra_del <- results(dds, name = "extra_deletion", contrast = c("extra_deletion","yes","no"))
+#res_helD_lfc <- lfcShrink(dds)
+res_extra_del %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj <= 0.05)
+plotCounts(dds, gene = "BSU04250", intgroup = "extra_deletion", normalized = FALSE )
+
+```
+```{r}
+res_exp_phase <- results(dds, name = "exp_vs_stat", contrast = c("phase","EXP","STAT"))
+#res_helD_lfc <- lfcShrink(dds)
+res_exp_phase %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj <= 0.05)
+res_exp_phase %>% as.data.frame() %>% rownames_to_column("gene") %>%filter(gene == "BSU33450")
+```
+
+```{r}
+run_diffs_list <- list()
+for(run_index_1 in 1:(length(levels(sampleInfo_all$run)) - 1)) {
+  for(run_index_2 in (run_index_1 + 1):length(levels(sampleInfo_all$run))) {
+    run1 = levels(sampleInfo_all$run)[run_index_1]
+    run2 = levels(sampleInfo_all$run)[run_index_2]
+    res_run <- results(dds, name = "run_test", contrast = c("run",run1,run2))
+    #res_helD_lfc <- lfcShrink(dds)
+    n_diff <- res_run %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj <= 0.05) %>% nrow()
+    run_diffs_list[[length(run_diffs_list) + 1]] <- data.frame(run1, run2, n_diff)
+  }
+}
+
+run_diffs <- do.call(rbind, run_diffs_list)
+
+run_diffs
+run_diffs %>% ggplot(aes(x = run1, y = run2, fill = n_diff)) +
+  geom_tile() + scale_fill_distiller(palette = "Spectral")
+```
+
+
+# Computing environment
+
+```{r}
+sessionInfo()
+```
+
