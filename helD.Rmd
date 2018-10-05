@@ -79,7 +79,13 @@ sampleInfo3 <- sampleInfo3 %>% mutate(sample = samples3, experiment = "3",
 
 counts3 <- read.csv(here('private_data','counts_r3.txt'))
 colnames(counts3)[1] <- "gene"
-if(!all(colnames(counts3)[2:length(counts3)] == samples3)) {
+
+# remove sample that failed QC (mixed EXP and STAT?)
+sampleInfo3 <- sampleInfo3 %>% filter(sample != "WT_EXP_A")
+counts3 <- counts3 %>% select(-WT_EXP_A)
+
+
+if(!all(colnames(counts3)[2:length(counts3)] == sampleInfo3$sample)) {
   stop("Mismatched count columns and sample info")
 }
 
@@ -106,18 +112,15 @@ if(num_mismatch > 0) {
 
 I am filtering out rRNA counts (expecially because of the rRNA problem in Exp1)
 
-BSU29390  
 
 ```{r}
-counts_all_matrix <- #counts1 %>% 
-  counts2 %>%
-  #inner_join(counts2, c("gene" = "gene")) %>%
+counts_all_matrix <- counts1 %>% 
+  inner_join(counts2, c("gene" = "gene")) %>%
   inner_join(counts3, c("gene" = "gene")) %>%
   filter(!grepl("^BSU_rRNA_", gene)) %>%
   column_to_rownames("gene") %>% as.matrix()
 
-sampleInfo_all <- #rbind(sampleInfo1, sampleInfo2, sampleInfo3) %>%
-  rbind(sampleInfo2, sampleInfo3) %>% 
+sampleInfo_all <- rbind(sampleInfo1, sampleInfo2, sampleInfo3) %>%
   mutate(run = factor(paste0("Exp",experiment,"_",run)),
          sample = factor(paste0("Exp",experiment,"_",sample)),
          genotype = factor(genotype, levels = c("WT","helD_KO")), #relevel(genotype, ref = "WT"),
@@ -140,20 +143,31 @@ Using shrinkage - the `betaPrior` argument (which is not default), as without sh
 # Currently We ignore growth medium as this is covered by the run variable
 dds <- DESeqDataSetFromMatrix(countData = counts_all_matrix,
                               colData = sampleInfo_all,
-                              #design = ~ genotype + extra_deletion + run + phase)
-                              design = ~ genotype_phase + extra_deletion + run)
+                              design = ~ genotype + extra_deletion + run + phase)
+                              #design = ~ genotype_phase + extra_deletion + run)
 
 #dds <- DESeq(dds, betaPrior = TRUE)
 dds <- estimateSizeFactors(dds)
 dds <- estimateDispersions(dds)
 dds <- nbinomWaldTest(dds, betaPrior = TRUE)
 
+converged <- mcols(dds)$betaConv
+converged[is.na(converged)] <- TRUE
+if(any(!converged)) {
+  cat(sum(!converged), "non converged rows - removing\n")
+  print(counts_all_matrix[!converged,])
+  dds <- dds[converged,]
+  dds <- nbinomWaldTest(dds, betaPrior = FALSE)
+}
+
+
 ```
 
 ```{r}
 res_helD <- results(dds, name = "helD_KO", contrast = c("genotype","helD_KO","WT"))
 #res_helD_lfc <- lfcShrink(dds)
-res_helD %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj <= 0.05)
+res_helD %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(gene == "BSU33450")#filter(padj <= 0.05)
+plotMA(res_helD)
 plotCounts(dds, gene = "BSU33450", intgroup = "genotype", normalized = TRUE )
 plotCounts(dds, gene = "BSU33450", intgroup = "phase", normalized = TRUE )
 
@@ -172,6 +186,9 @@ res_exp_phase <- results(dds, name = "exp_vs_stat", contrast = c("phase","EXP","
 res_exp_phase %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj <= 0.05)
 res_exp_phase %>% as.data.frame() %>% rownames_to_column("gene") %>%filter(gene == "BSU33450")
 ```
+
+
+
 
 ```{r}
 run_diffs_list <- list()
@@ -193,6 +210,35 @@ run_diffs %>% ggplot(aes(x = run1, y = run2, fill = n_diff)) +
   geom_tile() + scale_fill_distiller(palette = "Spectral")
 ```
 
+
+# Testing the less-than hypothesis
+
+```{r}
+ddsNoPrior <- nbinomWaldTest(dds, betaPrior = FALSE)
+
+converged <- mcols(ddsNoPrior)$betaConv
+converged[is.na(converged)] <- TRUE
+if(any(!converged)) {
+  cat(sum(!converged), "non converged rows - removing\n")
+  print(counts_all_matrix[!converged,])
+  ddsNoPrior <- ddsNoPrior[converged,]
+  ddsNoPrior <- nbinomWaldTest(ddsNoPrior, betaPrior = FALSE)
+}
+
+
+
+res_helD_lessAbs <- results(ddsNoPrior, name = "helD_KO_lessAbs", 
+                            contrast = c("genotype","helD_KO","WT"), 
+                            lfcThreshold = 2, 
+                            altHypothesis = "lessAbs")
+
+
+
+res_helD_lessAbs %>% as.data.frame() %>% rownames_to_column("gene") %>% filter(padj > 0.05)
+
+plotMA(res_helD_lessAbs)
+
+```
 
 # Computing environment
 
